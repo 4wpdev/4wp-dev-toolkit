@@ -1,0 +1,39 @@
+# Copy to your-plugin/.github/workflows/php-quality.yml
+name: PHP Quality
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout dev toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: 4wpdev/4wp-dev-toolkit
+          path: 4wp-dev-toolkit
+
+      - uses: php-actions/composer@v6
+        with:
+          php_version: '7.4'
+          php_extensions: json
+          command: install
+          working_dir: ./4wp-dev-toolkit
+
+      - uses: php-actions/composer@v6
+        with:
+          php_version: '7.4'
+          command: install
+        env:
+          COMPOSER_AUTH: '{}'
+
+      - name: PHPCS
+        run: vendor/bin/phpcs -q
+
+      - name: PHPUnit
+        run: vendor/bin/phpunit --no-coverage

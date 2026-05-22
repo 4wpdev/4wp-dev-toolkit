@@ -1,0 +1,27 @@
+<?php
+/**
+ * PHPUnit bootstrap template for 4wp-* plugins.
+ *
+ * Copy to your-plugin/tests/bootstrap.php and adjust PLUGIN_ROOT.
+ *
+ * @package 4wpdev/4wp-dev-toolkit
+ */
+
+declare( strict_types=1 );
+
+if ( ! defined( 'ABSPATH' ) ) {
+	define( 'ABSPATH', dirname( __DIR__, 2 ) . '/' );
+}
+
+$plugin_root = dirname( __DIR__, 2 );
+$autoload    = $plugin_root . '/vendor/autoload.php';
+
+if ( ! is_readable( $autoload ) ) {
+	fwrite( STDERR, "Run composer install in the plugin directory first.\n" );
+	exit( 1 );
+}
+
+require_once $autoload;
+
+// Optional: WordPress integration tests — set WP_TESTS_DIR and require wp tests bootstrap instead.
+// See docs/SETUP.md and scripts/install-wp-tests.sh in this toolkit.
