@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Runs "composer run lint" and "composer run test" in every 4wp-* plugin and prints a summary.
+#
+# Config (env or .env in the toolkit root, see .env.dist):
+#   FORWP_PLUGINS_DIR     Directory with plugin repos (default: parent of the toolkit).
+#   FORWP_PLUGINS         Space-separated names (default: every 4wp-* with composer.json).
+#   FORWP_FAMILY_INSTALL  1 = composer install where vendor/ is missing.
+# Usage: 4wp-family-check [lint|test]   (default: both)
+set -uo pipefail
+
+TOOLKIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# When installed as vendor/bin, BASH_SOURCE points to the package via symlink proxy.
+[ -f "$TOOLKIT_ROOT/4WP/ruleset.xml" ] || TOOLKIT_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+
+if [ -f "$TOOLKIT_ROOT/.env" ]; then
+	while IFS='=' read -r key value; do
+		case "$key" in ''|\#*) continue ;; esac
+		[ -z "${!key:-}" ] && export "$key=${value//\"/}"
+	done < "$TOOLKIT_ROOT/.env"
+fi
+
+PLUGINS_DIR="${FORWP_PLUGINS_DIR:-$(dirname "$TOOLKIT_ROOT")}"
+ONLY="${1:-all}"
+FAILED=0
+
+if [ -n "${FORWP_PLUGINS:-}" ]; then
+	PLUGINS="$FORWP_PLUGINS"
+else
+	PLUGINS="$(cd "$PLUGINS_DIR" && for d in 4wp-*/; do d="${d%/}"; [ -f "$d/composer.json" ] && [ "$d" != "4wp-dev-toolkit" ] && echo "$d"; done)"
+fi
+
+has_script() { grep -q "\"$2\"" "$1/composer.json"; }
+
+run() {
+	local dir="$1" script="$2"
+	if ! has_script "$dir" "$script"; then echo "—"; return; fi
+	if (cd "$dir" && composer run "$script" --no-interaction >/tmp/4wp-family-$$.log 2>&1); then echo "ok"; else echo "FAIL"; FAILED=1; fi
+}
+
+printf '%-28s %-8s %-8s %s\n' "PLUGIN" "LINT" "TEST" "NOTE"
+for name in $PLUGINS; do
+	dir="$PLUGINS_DIR/$name"
+	note=""
+	if [ ! -d "$dir/vendor" ]; then
+		if [ "${FORWP_FAMILY_INSTALL:-0}" = "1" ]; then
+			(cd "$dir" && composer install --no-interaction --quiet) || note="composer install failed"
+		else
+			printf '%-28s %-8s %-8s %s\n' "$name" "skip" "skip" "no vendor/ (FORWP_FAMILY_INSTALL=1)"
+			continue
+		fi
+	fi
+	lint="-"; test="-"
+	[ "$ONLY" != "test" ] && lint="$(run "$dir" lint)"
+	[ "$ONLY" != "lint" ] && test="$(run "$dir" test)"
+	[ "$lint" = "FAIL" ] || [ "$test" = "FAIL" ] && FAILED=1 && note="${note:+$note; }details: cd $dir && composer run lint|test"
+	printf '%-28s %-8s %-8s %s\n' "$name" "$lint" "$test" "$note"
+done
+rm -f /tmp/4wp-family-$$.log
+exit $FAILED

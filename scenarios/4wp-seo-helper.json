@@ -1,0 +1,9 @@
+{
+	"plugin": "4wp-seo-helper",
+	"description": "Read-only smoke calls for 4WP SEO Helper abilities (2.6.0+). update-meta is not called here.",
+	"calls": [
+		{ "tool": "forwp-seo-helper-list-missing-meta", "arguments": { "filter": "any", "per_page": 5 }, "readonly": true, "expect_keys": [ "items", "total", "seo_plugin" ] },
+		{ "tool": "forwp-seo-helper-list-missing-meta", "arguments": { "filter": "none", "per_page": 5 }, "readonly": true, "expect_keys": [ "items", "total" ] },
+		{ "tool": "forwp-seo-helper-search", "arguments": { "query": "wordpress", "limit": 5 }, "readonly": true, "expect_keys": [ "items", "seo_plugin" ] }
+	]
+}

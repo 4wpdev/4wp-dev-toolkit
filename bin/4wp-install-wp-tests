@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Installs WordPress core + the PHPUnit test library for integration tests (local / CI only).
+#
+# Config (env or .env, see .env.dist): WP_VERSION (latest | 6.9 | 7.1.3 | trunk), WP_TESTS_DIR, WP_CORE_DIR,
+# DB_NAME, DB_USER, DB_PASSWORD, DB_HOST (host, host:port or localhost:/path/to/mysql.sock).
+# Optional: SKIP_DB_CREATE=1.
+set -euo pipefail
+
+TOOLKIT_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+if [ -f "$TOOLKIT_ROOT/.env" ]; then
+	while IFS='=' read -r key value; do
+		case "$key" in ''|\#*) continue ;; esac
+		[ -z "${!key:-}" ] && export "$key=${value//\"/}"
+	done < "$TOOLKIT_ROOT/.env"
+fi
+
+TMP="${TMPDIR:-/tmp}"
+TMP="${TMP%/}"
+WP_VERSION="${WP_VERSION:-latest}"
+WP_TESTS_DIR="${WP_TESTS_DIR:-$TMP/wordpress-tests-lib}"
+WP_CORE_DIR="${WP_CORE_DIR:-$TMP/wordpress}"
+DB_NAME="${DB_NAME:-wordpress_tests}"
+DB_USER="${DB_USER:-root}"
+DB_PASSWORD="${DB_PASSWORD:-root}"
+DB_HOST="${DB_HOST:-localhost}"
+
+# Resolve "latest" to an exact version: svn has no tags/latest.
+if [ "$WP_VERSION" = "latest" ]; then
+	WP_VERSION="$(curl -fsSL https://api.wordpress.org/core/version-check/1.7/ | php -r '$d=json_decode(stream_get_contents(STDIN),true); echo $d["offers"][0]["current"] ?? "";')"
+	[ -n "$WP_VERSION" ] || { echo "Cannot resolve latest WordPress version" >&2; exit 1; }
+fi
+
+if [ "$WP_VERSION" = "trunk" ]; then
+	TESTS_REF="trunk"; CORE_URL="https://wordpress.org/nightly-builds/wordpress-latest.zip"
+else
+	TESTS_REF="tags/$WP_VERSION"; CORE_URL="https://wordpress.org/wordpress-$WP_VERSION.zip"
+fi
+echo "WordPress $WP_VERSION"
+
+command -v svn >/dev/null || { echo "svn is required (macOS: brew install subversion)" >&2; exit 1; }
+
+if [ ! -f "$WP_CORE_DIR/wp-settings.php" ]; then
+	mkdir -p "$WP_CORE_DIR"
+	curl -fsSL "$CORE_URL" -o "$TMP/wordpress.zip"
+	unzip -q -o "$TMP/wordpress.zip" -d "$TMP/wp-unzip"
+	cp -R "$TMP/wp-unzip/wordpress/." "$WP_CORE_DIR/"
+	rm -rf "$TMP/wordpress.zip" "$TMP/wp-unzip"
+fi
+
+if [ ! -d "$WP_TESTS_DIR/includes" ]; then
+	mkdir -p "$WP_TESTS_DIR"
+	svn export --quiet --force "https://develop.svn.wordpress.org/$TESTS_REF/tests/phpunit/includes/" "$WP_TESTS_DIR/includes"
+	svn export --quiet --force "https://develop.svn.wordpress.org/$TESTS_REF/tests/phpunit/data/" "$WP_TESTS_DIR/data"
+fi
+
+if [ ! -f "$WP_TESTS_DIR/wp-tests-config.php" ]; then
+	curl -fsSL "https://develop.svn.wordpress.org/$TESTS_REF/wp-tests-config-sample.php" -o "$WP_TESTS_DIR/wp-tests-config.php"
+	php -r '
+		$f = $argv[1];
+		$s = file_get_contents( $f );
+		$s = str_replace( "dirname( __FILE__ ) . \"/src/\"", var_export( rtrim( $argv[2], "/" ) . "/", true ), $s );
+		$s = str_replace( "__DIR__ . \"/src/\"", var_export( rtrim( $argv[2], "/" ) . "/", true ), $s );
+		foreach ( array( "youremptytestdbnamehere" => $argv[3], "yourusernamehere" => $argv[4], "yourpasswordhere" => $argv[5] ) as $k => $v ) {
+			$s = str_replace( $k, $v, $s );
+		}
+		$s = preg_replace( "/define\\(\\s*\x27DB_HOST\x27,\\s*\x27[^\x27]*\x27\\s*\\)/", "define( \x27DB_HOST\x27, " . var_export( $argv[6], true ) . " )", $s );
+		file_put_contents( $f, $s );
+	' "$WP_TESTS_DIR/wp-tests-config.php" "$WP_CORE_DIR" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" "$DB_HOST"
+fi
+
+if [ "${SKIP_DB_CREATE:-0}" != "1" ] && command -v mysqladmin >/dev/null; then
+	HOST="${DB_HOST%%:*}"; EXTRA="${DB_HOST#*:}"; ARGS=(--user="$DB_USER" --password="$DB_PASSWORD")
+	if [ "$EXTRA" != "$DB_HOST" ]; then
+		case "$EXTRA" in /*) ARGS+=(--socket="$EXTRA") ;; *) ARGS+=(--host="$HOST" --port="$EXTRA" --protocol=tcp) ;; esac
+	else
+		ARGS+=(--host="$HOST")
+	fi
+	mysqladmin create "$DB_NAME" "${ARGS[@]}" 2>/dev/null || echo "DB $DB_NAME exists or cannot be created — check DB_* settings."
+fi
+
+echo "WP_TESTS_DIR=$WP_TESTS_DIR"
+echo "WP_CORE_DIR=$WP_CORE_DIR"

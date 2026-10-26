@@ -1,0 +1,339 @@
+#!/usr/bin/env php
+<?php
+/**
+ * MCP smoke test for server 4wp (4wp-mcp-connector): initialize → tools/list → tools/call.
+ *
+ * Usage:
+ *   4wp-mcp-smoke                      List tools exposed on the server.
+ *   4wp-mcp-smoke <scenario>           Run scenarios/<scenario>.json (or a path to a JSON file).
+ *   4wp-mcp-smoke --all                Run every scenario in scenarios/.
+ *   4wp-mcp-smoke --tool=<name> [--args='{"k":"v"}']   Call one tool.
+ *   --allow-write                      Also run calls marked "readonly": false.
+ *
+ * Config (shell env wins over .env in the current dir, then the toolkit root):
+ *   WP_MCP_URL, WP_USER, WP_APP_PASSWORD, WP_MCP_INSECURE=1 (Local self-signed TLS).
+ *
+ * Exit code: 0 = all passed (skips allowed), 1 = failure, 2 = config error.
+ *
+ * @package 4wpdev/4wp-dev-toolkit
+ */
+
+// phpcs:disable -- CLI tool, not WordPress runtime code.
+
+const PROTOCOL = '2025-11-25';
+
+$toolkit_root = dirname( __DIR__ );
+
+load_env( getcwd() . '/.env' );
+load_env( $toolkit_root . '/.env' );
+
+$url      = (string) getenv( 'WP_MCP_URL' );
+$user     = (string) getenv( 'WP_USER' );
+$password = (string) getenv( 'WP_APP_PASSWORD' );
+$insecure = '1' === (string) getenv( 'WP_MCP_INSECURE' );
+
+if ( '' === $url || '' === $user || '' === $password ) {
+	fail_config( 'Set WP_MCP_URL, WP_USER and WP_APP_PASSWORD (env or .env, see .env.dist).' );
+}
+if ( ! function_exists( 'curl_init' ) ) {
+	fail_config( 'PHP curl extension is required.' );
+}
+
+$options     = parse_args( array_slice( $argv, 1 ) );
+$allow_write = isset( $options['allow-write'] );
+
+$client = new Mcp_Client( $url, $user, $password, $insecure );
+
+// 1. initialize.
+$init = $client->request(
+	'initialize',
+	array(
+		'protocolVersion' => PROTOCOL,
+		'capabilities'    => new stdClass(),
+		'clientInfo'      => array(
+			'name'    => '4wp-mcp-smoke',
+			'version' => '1.0',
+		),
+	)
+);
+if ( isset( $init['error'] ) ) {
+	fail( 'initialize: ' . describe_error( $init ) );
+}
+$server = $init['result']['serverInfo']['name'] ?? '?';
+out( sprintf( 'Server: %s %s · %s', $server, $init['result']['serverInfo']['version'] ?? '', $url ) );
+
+// 2. tools/list.
+$list = $client->request( 'tools/list', new stdClass() );
+if ( isset( $list['error'] ) ) {
+	fail( 'tools/list: ' . describe_error( $list ) );
+}
+$tools = array();
+foreach ( $list['result']['tools'] ?? array() as $tool ) {
+	$tools[ $tool['name'] ] = $tool;
+}
+out( sprintf( 'Tools: %d', count( $tools ) ) );
+
+// 3. Calls.
+$calls = array();
+if ( isset( $options['tool'] ) ) {
+	$arguments = isset( $options['args'] ) ? json_decode( (string) $options['args'], true ) : array();
+	if ( ! is_array( $arguments ) ) {
+		fail_config( '--args must be a JSON object.' );
+	}
+	$calls[] = array(
+		'tool'      => (string) $options['tool'],
+		'arguments' => $arguments,
+		'readonly'  => ! $allow_write ? true : false,
+	);
+	$allow_write = true;
+} elseif ( isset( $options['all'] ) ) {
+	foreach ( glob( $toolkit_root . '/scenarios/*.json' ) ?: array() as $file ) {
+		$calls = array_merge( $calls, load_scenario( $file ) );
+	}
+} elseif ( isset( $options[0] ) ) {
+	$name = (string) $options[0];
+	$file = is_file( $name ) ? $name : $toolkit_root . '/scenarios/' . basename( $name, '.json' ) . '.json';
+	if ( ! is_file( $file ) ) {
+		fail_config( 'Scenario not found: ' . $name );
+	}
+	$calls = load_scenario( $file );
+} else {
+	foreach ( $tools as $name => $tool ) {
+		$hint = ! empty( $tool['annotations']['readOnlyHint'] ) ? 'read-only' : 'write';
+		out( sprintf( '  - %s (%s)', $name, $hint ) );
+	}
+	exit( 0 );
+}
+
+$counts = array(
+	'PASS' => 0,
+	'FAIL' => 0,
+	'SKIP' => 0,
+);
+
+foreach ( $calls as $index => $call ) {
+	$tool  = (string) ( $call['tool'] ?? '' );
+	$label = sprintf( '[%d] %s%s', $index + 1, isset( $call['plugin'] ) ? $call['plugin'] . ' · ' : '', $tool );
+
+	if ( ! isset( $tools[ $tool ] ) ) {
+		report( 'SKIP', $label, 'not exposed (enable it in Settings → 4WP MCP)', $counts );
+		continue;
+	}
+	if ( false === ( $call['readonly'] ?? true ) && ! $allow_write ) {
+		report( 'SKIP', $label, 'write call (use --allow-write)', $counts );
+		continue;
+	}
+
+	$started  = microtime( true );
+	$response = $client->request(
+		'tools/call',
+		array(
+			'name'      => $tool,
+			'arguments' => (object) ( $call['arguments'] ?? array() ),
+		)
+	);
+	$ms = (int) round( ( microtime( true ) - $started ) * 1000 );
+
+	if ( isset( $response['error'] ) ) {
+		report( 'FAIL', $label, describe_error( $response ), $counts );
+		continue;
+	}
+	$result = $response['result'] ?? array();
+	if ( ! empty( $result['isError'] ) ) {
+		report( 'FAIL', $label, (string) ( $result['content'][0]['text'] ?? 'isError' ), $counts );
+		continue;
+	}
+
+	$expect_keys = (array) ( $call['expect_keys'] ?? array() );
+	$structured  = $result['structuredContent'] ?? json_decode( (string) ( $result['content'][0]['text'] ?? '' ), true );
+	$missing     = array_diff( $expect_keys, is_array( $structured ) ? array_keys( $structured ) : array() );
+	if ( array() !== $missing ) {
+		report( 'FAIL', $label, 'missing keys: ' . implode( ', ', $missing ), $counts );
+		continue;
+	}
+
+	report( 'PASS', $label, $ms . ' ms', $counts );
+}
+
+out( sprintf( 'Result: %d passed, %d failed, %d skipped', $counts['PASS'], $counts['FAIL'], $counts['SKIP'] ) );
+exit( $counts['FAIL'] > 0 ? 1 : 0 );
+
+/**
+ * Minimal MCP Streamable HTTP client (JSON responses; SSE "data:" lines tolerated).
+ */
+final class Mcp_Client {
+	private string $url;
+	private string $auth;
+	private bool $insecure;
+	private ?string $session = null;
+	private int $id          = 0;
+
+	public function __construct( string $url, string $user, string $password, bool $insecure ) {
+		$this->url      = $url;
+		$this->auth     = $user . ':' . $password;
+		$this->insecure = $insecure;
+	}
+
+	/**
+	 * @param array<string, mixed>|stdClass $params
+	 * @return array<string, mixed>
+	 */
+	public function request( string $method, $params ): array {
+		$headers = array(
+			'Content-Type: application/json',
+			'Accept: application/json, text/event-stream',
+		);
+		if ( null !== $this->session ) {
+			$headers[] = 'Mcp-Session-Id: ' . $this->session;
+			$headers[] = 'MCP-Protocol-Version: ' . PROTOCOL;
+		}
+
+		$body = json_encode(
+			array(
+				'jsonrpc' => '2.0',
+				'id'      => ++$this->id,
+				'method'  => $method,
+				'params'  => $params,
+			)
+		);
+
+		$response_headers = array();
+		$curl             = curl_init( $this->url );
+		curl_setopt_array(
+			$curl,
+			array(
+				CURLOPT_POST           => true,
+				CURLOPT_POSTFIELDS     => $body,
+				CURLOPT_HTTPHEADER     => $headers,
+				CURLOPT_USERPWD        => $this->auth,
+				CURLOPT_RETURNTRANSFER => true,
+				CURLOPT_TIMEOUT        => 60,
+				CURLOPT_SSL_VERIFYPEER => ! $this->insecure,
+				CURLOPT_SSL_VERIFYHOST => $this->insecure ? 0 : 2,
+				CURLOPT_HEADERFUNCTION => static function ( $handle, string $line ) use ( &$response_headers ): int {
+					$parts = explode( ':', $line, 2 );
+					if ( 2 === count( $parts ) ) {
+						$response_headers[ strtolower( trim( $parts[0] ) ) ] = trim( $parts[1] );
+					}
+					return strlen( $line );
+				},
+			)
+		);
+		$raw    = curl_exec( $curl );
+		$status = (int) curl_getinfo( $curl, CURLINFO_RESPONSE_CODE );
+		$error  = curl_error( $curl );
+		curl_close( $curl );
+
+		if ( false === $raw ) {
+			fail( sprintf( '%s: HTTP request failed: %s', $method, $error ) );
+		}
+		if ( isset( $response_headers['mcp-session-id'] ) ) {
+			$this->session = $response_headers['mcp-session-id'];
+		}
+
+		$json = $this->decode( (string) $raw );
+		if ( null === $json ) {
+			fail( sprintf( '%s: HTTP %d, not JSON-RPC: %s', $method, $status, substr( (string) $raw, 0, 200 ) ) );
+		}
+
+		return $json;
+	}
+
+	/**
+	 * @return array<string, mixed>|null
+	 */
+	private function decode( string $raw ): ?array {
+		$json = json_decode( $raw, true );
+		if ( is_array( $json ) ) {
+			return $json;
+		}
+		foreach ( preg_split( '/\r?\n/', $raw ) as $line ) {
+			if ( 0 === strpos( $line, 'data:' ) ) {
+				$json = json_decode( trim( substr( $line, 5 ) ), true );
+				if ( is_array( $json ) ) {
+					return $json;
+				}
+			}
+		}
+		return null;
+	}
+}
+
+/**
+ * @return list<array<string, mixed>>
+ */
+function load_scenario( string $file ): array {
+	$data = json_decode( (string) file_get_contents( $file ), true );
+	if ( ! is_array( $data ) || ! isset( $data['calls'] ) || ! is_array( $data['calls'] ) ) {
+		fail_config( 'Invalid scenario (needs "calls"): ' . $file );
+	}
+	$plugin = (string) ( $data['plugin'] ?? basename( $file, '.json' ) );
+	return array_map(
+		static function ( array $call ) use ( $plugin ): array {
+			return $call + array( 'plugin' => $plugin );
+		},
+		$data['calls']
+	);
+}
+
+function load_env( string $file ): void {
+	if ( ! is_readable( $file ) ) {
+		return;
+	}
+	foreach ( file( $file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES ) ?: array() as $line ) {
+		$line = trim( $line );
+		if ( '' === $line || '#' === $line[0] || false === strpos( $line, '=' ) ) {
+			continue;
+		}
+		list( $key, $value ) = array_map( 'trim', explode( '=', $line, 2 ) );
+		$value               = trim( $value, "\"'" );
+		if ( false === getenv( $key ) || '' === getenv( $key ) ) {
+			putenv( $key . '=' . $value );
+		}
+	}
+}
+
+/**
+ * @return array<int|string, string|bool>
+ */
+function parse_args( array $args ): array {
+	$options = array();
+	foreach ( $args as $arg ) {
+		if ( 0 === strpos( $arg, '--' ) ) {
+			$parts                      = explode( '=', substr( $arg, 2 ), 2 );
+			$options[ $parts[0] ] = $parts[1] ?? true;
+		} else {
+			$options[] = $arg;
+		}
+	}
+	return $options;
+}
+
+/**
+ * @param array<string, mixed> $response
+ */
+function describe_error( array $response ): string {
+	return sprintf( '%s %s', $response['error']['code'] ?? '', $response['error']['message'] ?? 'error' );
+}
+
+/**
+ * @param array<string, int> $counts
+ */
+function report( string $status, string $label, string $detail, array &$counts ): void {
+	++$counts[ $status ];
+	out( sprintf( '%-4s %s — %s', $status, $label, $detail ) );
+}
+
+function out( string $line ): void {
+	fwrite( STDOUT, $line . PHP_EOL );
+}
+
+function fail( string $message ): void {
+	fwrite( STDERR, 'FAIL ' . $message . PHP_EOL );
+	exit( 1 );
+}
+
+function fail_config( string $message ): void {
+	fwrite( STDERR, 'CONFIG ' . $message . PHP_EOL );
+	exit( 2 );
+}

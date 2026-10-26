@@ -2,18 +2,16 @@
 /**
  * PHPUnit bootstrap template for 4wp-* plugins.
  *
- * Copy to your-plugin/tests/bootstrap.php and adjust PLUGIN_ROOT.
+ * Copy to your-plugin/tests/bootstrap.php.
+ * - Unit tests (default): Brain Monkey mocks WordPress functions, no database.
+ * - Integration tests: set WP_TESTS_DIR (vendor/bin/4wp-install-wp-tests) — WordPress is loaded.
  *
  * @package 4wpdev/4wp-dev-toolkit
  */
 
 declare( strict_types=1 );
 
-if ( ! defined( 'ABSPATH' ) ) {
-	define( 'ABSPATH', dirname( __DIR__, 2 ) . '/' );
-}
-
-$plugin_root = dirname( __DIR__, 2 );
+$plugin_root = dirname( __DIR__ );
 $autoload    = $plugin_root . '/vendor/autoload.php';
 
 if ( ! is_readable( $autoload ) ) {
@@ -23,5 +21,34 @@ if ( ! is_readable( $autoload ) ) {
 
 require_once $autoload;
 
-// Optional: WordPress integration tests — set WP_TESTS_DIR and require wp tests bootstrap instead.
-// See docs/SETUP.md and scripts/install-wp-tests.sh in this toolkit.
+$wp_tests_dir = getenv( 'WP_TESTS_DIR' );
+
+if ( $wp_tests_dir && is_readable( $wp_tests_dir . '/includes/functions.php' ) ) {
+	// Integration: load WordPress and the plugin.
+	if ( ! defined( 'WP_TESTS_PHPUNIT_POLYFILLS_PATH' ) ) {
+		define( 'WP_TESTS_PHPUNIT_POLYFILLS_PATH', $plugin_root . '/vendor/yoast/phpunit-polyfills' );
+	}
+	require_once $wp_tests_dir . '/includes/functions.php';
+
+	tests_add_filter(
+		'muplugins_loaded',
+		static function () use ( $plugin_root ): void {
+			// Load required plugins first when present, e.g. MCP Adapter:
+			// require_once WP_PLUGIN_DIR . '/mcp-adapter/mcp-adapter.php';
+			foreach ( glob( $plugin_root . '/*.php' ) as $file ) {
+				if ( false !== strpos( (string) file_get_contents( $file, false, null, 0, 4096 ), 'Plugin Name:' ) ) {
+					require_once $file;
+					break;
+				}
+			}
+		}
+	);
+
+	require_once $wp_tests_dir . '/includes/bootstrap.php';
+	return;
+}
+
+// Unit: no WordPress. Tests extend \ForWP\DevToolkit\Testing\UnitTestCase (Brain Monkey set up / torn down).
+if ( ! defined( 'ABSPATH' ) ) {
+	define( 'ABSPATH', $plugin_root . '/' );
+}

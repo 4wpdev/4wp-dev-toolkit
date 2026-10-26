@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<ruleset name="4WP">
+	<description>Shared WordPress Coding Standards baseline for 4wp-* plugins. Use in a plugin: &lt;rule ref="4WP"/&gt;.</description>
+
+	<arg name="extensions" value="php"/>
+	<arg name="parallel" value="8"/>
+
+	<!-- Defaults; a plugin overrides them in its own phpcs.xml (e.g. 8.3- / 6.9). -->
+	<config name="minimum_supported_wp_version" value="6.4"/>
+	<config name="testVersion" value="7.4-"/>
+
+	<rule ref="WordPress">
+		<exclude name="WordPress.Files.FileName"/>
+	</rule>
+	<rule ref="PHPCompatibilityWP"/>
+
+	<!-- Per-plugin phpcs.xml must set text_domain, prefixes and <file> paths. -->
+</ruleset>

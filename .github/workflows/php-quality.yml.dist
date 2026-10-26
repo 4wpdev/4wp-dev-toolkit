@@ -1,4 +1,7 @@
 # Copy to your-plugin/.github/workflows/php-quality.yml
+# Plugin is checked out to plugin/ and the toolkit beside it, so both setups work:
+# - new: require-dev "4wpdev/4wp-dev-toolkit" from GitHub (vendor/), <rule ref="4WP"/>
+# - legacy: ../4wp-dev-toolkit path repository / phpcs.xml ref
 name: PHP Quality
 
 on:
@@ -9,31 +12,35 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4'] # set to the plugin's supported range
+    defaults:
+      run:
+        working-directory: plugin
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: plugin
 
-      - name: Checkout dev toolkit
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: 4wpdev/4wp-dev-toolkit
           path: 4wp-dev-toolkit
 
-      - uses: php-actions/composer@v6
+      - uses: shivammathur/setup-php@v2
         with:
-          php_version: '7.4'
-          php_extensions: json
-          command: install
-          working_dir: ./4wp-dev-toolkit
+          php-version: ${{ matrix.php }}
+          tools: composer:v2
+          coverage: none
 
-      - uses: php-actions/composer@v6
-        with:
-          php_version: '7.4'
-          command: install
-        env:
-          COMPOSER_AUTH: '{}'
+      - name: Composer
+        run: composer install --no-interaction --no-progress
 
       - name: PHPCS
         run: vendor/bin/phpcs -q
 
       - name: PHPUnit
-        run: vendor/bin/phpunit --no-coverage
+        run: |
+          if [ -f phpunit.xml ] || [ -f phpunit.xml.dist ]; then vendor/bin/phpunit --no-coverage; else echo "No PHPUnit config"; fi

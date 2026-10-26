@@ -1,0 +1,7 @@
+{
+	"plugin": "4wp-social",
+	"description": "Read-only smoke calls for 4WP Social abilities.",
+	"calls": [
+		{ "tool": "forwp-social-platforms", "arguments": {}, "readonly": true, "expect_keys": [ "result" ] }
+	]
+}

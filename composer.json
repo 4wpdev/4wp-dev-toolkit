@@ -1,7 +1,7 @@
 {
 	"name": "4wpdev/4wp-dev-toolkit",
-	"description": "Shared PHPCS/WPCS rules and PHPUnit bootstrap for 4wp-* plugins (dev-only, not for wordpress.org ZIP).",
-	"type": "library",
+	"description": "Shared PHPCS standard (4WP), PHPUnit helpers, MCP smoke tests and family checks for 4wp-* plugins (dev-only, not for wordpress.org ZIP).",
+	"type": "phpcodesniffer-standard",
 	"license": "GPL-2.0-or-later",
 	"require": {
 		"php": ">=7.4",
@@ -10,8 +10,18 @@
 		"phpcompatibility/phpcompatibility-wp": "^2.1",
 		"phpunit/phpunit": "^9.6",
 		"wp-coding-standards/wpcs": "^3.1",
-		"yoast/phpunit-polyfills": "^2.0"
+		"yoast/phpunit-polyfills": "^2.0 || ^4.0"
 	},
+	"autoload": {
+		"psr-4": {
+			"ForWP\\DevToolkit\\": "src/"
+		}
+	},
+	"bin": [
+		"bin/4wp-mcp-smoke",
+		"bin/4wp-family-check",
+		"bin/4wp-install-wp-tests"
+	],
 	"config": {
 		"allow-plugins": {
 			"dealerdirect/phpcodesniffer-composer-installer": true
@@ -19,7 +29,9 @@
 		"sort-packages": true
 	},
 	"scripts": {
-		"lint": "phpcs",
-		"lint:fix": "phpcbf"
+		"lint": "phpcs --standard=4WP src",
+		"lint:fix": "phpcbf --standard=4WP src",
+		"mcp-smoke": "php bin/4wp-mcp-smoke",
+		"family-check": "bash bin/4wp-family-check"
 	}
 }

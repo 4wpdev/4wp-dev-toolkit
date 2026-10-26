@@ -1,0 +1,20 @@
+<?php
+/**
+ * Example unit test. Copy to your-plugin/tests/unit/ExampleTest.php.
+ *
+ * @package 4wpdev/4wp-dev-toolkit
+ */
+
+declare( strict_types=1 );
+
+use Brain\Monkey\Functions;
+use ForWP\DevToolkit\Testing\UnitTestCase;
+
+final class ExampleTest extends UnitTestCase {
+
+	public function test_wordpress_function_is_mocked(): void {
+		Functions\when( 'get_option' )->justReturn( 'yes' );
+
+		$this->assertSame( 'yes', get_option( 'forwp_example' ) );
+	}
+}
